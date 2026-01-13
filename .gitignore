@@ -1,0 +1,8 @@
+wayback/cache/
+wayback/hero_page_site/
+__pycache__/
+*.pyc
+.DS_Store
+*.log
+*.html
+!wayback/*.py
