@@ -4,6 +4,7 @@ Proxy server that fetches hero.page content from Wayback Machine
 and serves it locally for SEO purposes.
 """
 import http.server
+import socketserver
 import urllib.request
 import urllib.parse
 import ssl
@@ -12,6 +13,8 @@ import os
 import hashlib
 import json
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 PORT = int(os.environ.get("PORT", 8000))
 CACHE_DIR = Path("cache")
@@ -200,28 +203,39 @@ class WaybackProxyHandler(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Length', len(content))
             self.end_headers()
             self.wfile.write(content)
+        except BrokenPipeError:
+            pass  # Client disconnected
         except Exception as e:
             self.send_error(500, str(e))
 
     def send_html_response(self, status, content):
         """Send an HTML response"""
-        content_bytes = content.encode('utf-8')
-        self.send_response(status)
-        self.send_header('Content-Type', 'text/html; charset=utf-8')
-        self.send_header('Content-Length', len(content_bytes))
-        # SEO-friendly headers
-        self.send_header('X-Robots-Tag', 'index, follow')
-        self.end_headers()
-        self.wfile.write(content_bytes)
+        try:
+            content_bytes = content.encode('utf-8')
+            self.send_response(status)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', len(content_bytes))
+            # SEO-friendly headers
+            self.send_header('X-Robots-Tag', 'index, follow')
+            self.end_headers()
+            self.wfile.write(content_bytes)
+        except BrokenPipeError:
+            pass  # Client disconnected, ignore
 
     def log_message(self, format, *args):
         """Custom log format"""
         print(f"[{self.log_date_time_string()}] {args[0]}")
 
+
+class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    """Handle requests in separate threads for better concurrency"""
+    daemon_threads = True
+
+
 def run_server():
     """Run the proxy server"""
     server_address = ('', PORT)
-    httpd = http.server.HTTPServer(server_address, WaybackProxyHandler)
+    httpd = ThreadedHTTPServer(server_address, WaybackProxyHandler)
 
     print("=" * 60)
     print(f"Wayback Proxy Server for hero.page")
