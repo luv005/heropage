@@ -36,18 +36,30 @@ def get_cache_path(path):
     safe_name = hashlib.md5(path.encode()).hexdigest()
     return CACHE_DIR / f"{safe_name}.html"
 
+class RedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Custom redirect handler that follows Wayback redirects"""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Follow all redirects including to different timestamps
+        return urllib.request.Request(newurl, headers=req.headers)
+
+
 def fetch_from_wayback(path):
     """Fetch a page from Wayback Machine"""
-    # Try with id_ for raw content first
+    # Use wildcard timestamp to get nearest available snapshot
     wayback_url = f"https://web.archive.org/web/{WAYBACK_TIMESTAMP}id_/https://{ORIGINAL_DOMAIN}{path}"
 
     ctx = get_ssl_context()
 
     try:
+        # Create opener that follows redirects
+        opener = urllib.request.build_opener(
+            RedirectHandler,
+            urllib.request.HTTPSHandler(context=ctx)
+        )
         req = urllib.request.Request(wayback_url, headers={
             "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
         })
-        with urllib.request.urlopen(req, context=ctx, timeout=30) as response:
+        with opener.open(req, timeout=30) as response:
             content = response.read().decode('utf-8', errors='ignore')
             return content, response.status
     except urllib.error.HTTPError as e:
