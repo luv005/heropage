@@ -13,11 +13,11 @@ import hashlib
 import json
 from pathlib import Path
 
-PORT = 8000
+PORT = int(os.environ.get("PORT", 8000))
 CACHE_DIR = Path("cache")
 WAYBACK_TIMESTAMP = "20250519"  # Use a specific timestamp for consistency
 ORIGINAL_DOMAIN = "hero.page"
-LOCAL_DOMAIN = "localhost:8000"  # Change this to your actual domain
+LOCAL_DOMAIN = os.environ.get("DOMAIN", "localhost:8000")  # Set DOMAIN env var in production
 
 # Create cache directory
 CACHE_DIR.mkdir(exist_ok=True)
