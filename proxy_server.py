@@ -114,6 +114,19 @@ class WaybackProxyHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split('?')[0]  # Remove query string
 
+        # Serve SEO files (sitemap.xml, robots.txt)
+        if path in ['/sitemap.xml', '/robots.txt']:
+            seo_file = Path(path.lstrip('/'))
+            if seo_file.exists():
+                content = seo_file.read_text(encoding='utf-8')
+                content_type = 'application/xml' if path == '/sitemap.xml' else 'text/plain'
+                self.send_response(200)
+                self.send_header('Content-Type', content_type)
+                self.send_header('Content-Length', len(content.encode('utf-8')))
+                self.end_headers()
+                self.wfile.write(content.encode('utf-8'))
+                return
+
         # Serve static assets directly if they exist locally
         local_file = Path("hero_page_site") / path.lstrip('/')
         if local_file.exists() and local_file.is_file():
