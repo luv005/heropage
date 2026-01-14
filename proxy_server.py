@@ -36,13 +36,6 @@ def get_cache_path(path):
     safe_name = hashlib.md5(path.encode()).hexdigest()
     return CACHE_DIR / f"{safe_name}.html"
 
-class RedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Custom redirect handler that follows Wayback redirects"""
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        # Follow all redirects including to different timestamps
-        return urllib.request.Request(newurl, headers=req.headers)
-
-
 def fetch_from_wayback(path):
     """Fetch a page from Wayback Machine"""
     # Use wildcard timestamp to get nearest available snapshot
@@ -51,21 +44,19 @@ def fetch_from_wayback(path):
     ctx = get_ssl_context()
 
     try:
-        # Create opener that follows redirects
-        opener = urllib.request.build_opener(
-            RedirectHandler,
-            urllib.request.HTTPSHandler(context=ctx)
-        )
         req = urllib.request.Request(wayback_url, headers={
             "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
         })
-        with opener.open(req, timeout=30) as response:
+        # urllib follows redirects by default
+        with urllib.request.urlopen(req, context=ctx, timeout=45) as response:
             content = response.read().decode('utf-8', errors='ignore')
+            print(f"[WAYBACK] {path} -> {response.status}, {len(content)} bytes")
             return content, response.status
     except urllib.error.HTTPError as e:
+        print(f"[HTTP ERROR] {path}: {e.code}")
         return None, e.code
     except Exception as e:
-        print(f"Error fetching {path}: {e}")
+        print(f"[ERROR] {path}: {e}")
         return None, 500
 
 def fix_content(content, path):
