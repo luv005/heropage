@@ -101,7 +101,14 @@ def fix_content(content, path):
         '',
         content
     )
-    # Fix quibey.com links to local
+    # Remove external links to quibey.com (keep the text, remove the link)
+    content = re.sub(
+        r'<a[^>]*href="https?://quibey\.com[^"]*"[^>]*>(.*?)</a>',
+        r'\1',
+        content,
+        flags=re.DOTALL
+    )
+    # Also remove any remaining quibey.com URLs in href/src attributes
     content = re.sub(
         r'https://quibey\.com/',
         '/',
