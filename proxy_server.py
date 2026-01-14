@@ -170,13 +170,26 @@ class WaybackProxyHandler(http.server.BaseHTTPRequestHandler):
             # Fix content for local serving
             content = fix_content(content, path)
 
-            # Cache it (only if substantial content)
-            if len(content) > 1000:
-                cache_path.write_text(content, encoding='utf-8')
+            # Cache all content (even small SPA shells have SEO value)
+            cache_path.write_text(content, encoding='utf-8')
 
             self.send_html_response(200, content)
+        elif status == 200 and not content:
+            # Empty response from Wayback
+            print(f"[EMPTY] {path}")
+            self.send_html_response(404, f"""
+<!DOCTYPE html>
+<html>
+<head><title>Content Unavailable</title></head>
+<body>
+<h1>Content Unavailable</h1>
+<p>The archived content for {path} could not be retrieved.</p>
+<p><a href="/">Go to homepage</a></p>
+</body>
+</html>""")
         else:
             # Try to serve a simple 404 page
+            print(f"[404] {path} - status: {status}")
             self.send_html_response(404, f"""
 <!DOCTYPE html>
 <html>
