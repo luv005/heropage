@@ -142,9 +142,8 @@ def fix_content(content, path):
         content
     )
 
-    # Replace Quibey brand with Hero
-    content = content.replace('| Quibey', '| Hero')
-    content = content.replace('Quibey', 'Hero')
+    # Replace all Quibey references with Hero (case insensitive)
+    content = re.sub(r'[Qq]uibey', 'Hero', content)
 
     # Remove existing canonical tags and add new one for hero.page
     content = re.sub(r'<link[^>]*rel="canonical"[^>]*/>', '', content)
