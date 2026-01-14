@@ -154,7 +154,7 @@ class WaybackProxyHandler(http.server.BaseHTTPRequestHandler):
                 return
 
         # Serve static assets directly if they exist locally
-        local_file = Path("hero_page_site") / path.lstrip('/')
+        local_file = Path("static_pages") / path.lstrip('/')
         if local_file.exists() and local_file.is_file():
             self.serve_local_file(local_file)
             return
