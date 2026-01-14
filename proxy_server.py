@@ -36,18 +36,36 @@ def get_cache_path(path):
     safe_name = hashlib.md5(path.encode()).hexdigest()
     return CACHE_DIR / f"{safe_name}.html"
 
-def fetch_from_wayback(path):
-    """Fetch a page from Wayback Machine"""
-    # Use wildcard timestamp to get nearest available snapshot
-    wayback_url = f"https://web.archive.org/web/{WAYBACK_TIMESTAMP}id_/https://{ORIGINAL_DOMAIN}{path}"
+def fetch_from_quibey(path):
+    """Fetch a page from quibey.com (mirror site)"""
+    quibey_url = f"https://quibey.com{path}"
+    ctx = get_ssl_context()
 
+    try:
+        req = urllib.request.Request(quibey_url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        })
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as response:
+            content = response.read().decode('utf-8', errors='ignore')
+            if len(content) > 5000:  # Has actual content
+                print(f"[QUIBEY] {path} -> {response.status}, {len(content)} bytes")
+                return content, response.status
+            return None, 404
+    except urllib.error.HTTPError as e:
+        return None, e.code
+    except Exception as e:
+        return None, 500
+
+
+def fetch_from_wayback(path):
+    """Fetch a page from Wayback Machine (fallback)"""
+    wayback_url = f"https://web.archive.org/web/{WAYBACK_TIMESTAMP}id_/https://{ORIGINAL_DOMAIN}{path}"
     ctx = get_ssl_context()
 
     try:
         req = urllib.request.Request(wayback_url, headers={
             "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
         })
-        # urllib follows redirects by default
         with urllib.request.urlopen(req, context=ctx, timeout=45) as response:
             content = response.read().decode('utf-8', errors='ignore')
             print(f"[WAYBACK] {path} -> {response.status}, {len(content)} bytes")
@@ -59,6 +77,17 @@ def fetch_from_wayback(path):
         print(f"[ERROR] {path}: {e}")
         return None, 500
 
+
+def fetch_content(path):
+    """Try quibey.com first, then fall back to Wayback Machine"""
+    # Try quibey.com first (faster, has rendered content)
+    content, status = fetch_from_quibey(path)
+    if content and status == 200:
+        return content, status
+
+    # Fall back to Wayback Machine
+    return fetch_from_wayback(path)
+
 def fix_content(content, path):
     """Fix links and references to work locally"""
     # Remove Wayback Machine wrapper
@@ -69,6 +98,17 @@ def fix_content(content, path):
     )
     content = re.sub(
         r'https://web\.archive\.org/web/\d+/https://hero\.page',
+        '',
+        content
+    )
+    # Fix quibey.com links to local
+    content = re.sub(
+        r'https://quibey\.com/',
+        '/',
+        content
+    )
+    content = re.sub(
+        r'https://quibey\.com',
         '',
         content
     )
@@ -86,6 +126,11 @@ def fix_content(content, path):
     # Fix protocol-relative URLs
     content = re.sub(
         r'//hero\.page/',
+        '/',
+        content
+    )
+    content = re.sub(
+        r'//quibey\.com/',
         '/',
         content
     )
@@ -173,9 +218,9 @@ class WaybackProxyHandler(http.server.BaseHTTPRequestHandler):
             self.send_html_response(200, content)
             return
 
-        # Fetch from Wayback Machine
+        # Fetch from quibey.com first, then Wayback Machine
         print(f"[FETCH] {path}")
-        content, status = fetch_from_wayback(path)
+        content, status = fetch_content(path)
 
         if content and status == 200:
             # Fix content for local serving
