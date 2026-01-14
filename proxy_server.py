@@ -142,7 +142,13 @@ def fix_content(content, path):
         content
     )
 
-    # Add canonical tag for SEO (pointing to your new domain later)
+    # Replace Quibey brand with Hero
+    content = content.replace('| Quibey', '| Hero')
+    content = content.replace('Quibey', 'Hero')
+
+    # Remove existing canonical tags and add new one for hero.page
+    content = re.sub(r'<link[^>]*rel="canonical"[^>]*/>', '', content)
+    content = re.sub(r'<link[^>]*rel="canonical"[^>]*>', '', content)
     if '<head>' in content:
         canonical = f'<link rel="canonical" href="https://{LOCAL_DOMAIN}{path}" />'
         content = content.replace('<head>', f'<head>\n{canonical}', 1)
