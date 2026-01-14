@@ -114,6 +114,26 @@ a, a *, [href] { pointer-events: auto !important; cursor: pointer !important; }
 </style>'''
         content = content.replace('</head>', f'{css_fix}</head>')
 
+    # If page is an SPA shell (empty root div), add a fallback message with metadata
+    if '<div class="main-window" id="root"></div>' in content or '<div id="root"></div>' in content:
+        # Extract title and description from meta tags
+        title_match = re.search(r'<title>([^<]+)</title>', content)
+        desc_match = re.search(r'<meta name="description" content="([^"]+)"', content)
+
+        title = title_match.group(1) if title_match else 'Hero Page'
+        description = desc_match.group(1) if desc_match else ''
+
+        fallback_content = f'''
+<div style="max-width: 800px; margin: 50px auto; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+    <h1 style="color: #333;">{title}</h1>
+    <p style="color: #666; font-size: 18px;">{description}</p>
+    <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;">
+    <p style="color: #999;">This page's full content was not archived. <a href="/" style="color: #e82f64;">Return to homepage</a></p>
+</div>
+'''
+        content = content.replace('<div class="main-window" id="root"></div>', f'<div class="main-window" id="root">{fallback_content}</div>')
+        content = content.replace('<div id="root"></div>', f'<div id="root">{fallback_content}</div>')
+
     return content
 
 class WaybackProxyHandler(http.server.BaseHTTPRequestHandler):
