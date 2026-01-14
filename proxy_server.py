@@ -47,7 +47,7 @@ def fetch_from_quibey(path):
         })
         with urllib.request.urlopen(req, context=ctx, timeout=30) as response:
             content = response.read().decode('utf-8', errors='ignore')
-            if len(content) > 5000:  # Has actual content
+            if len(content) > 1000:  # Accept SPA shells with meta tags
                 print(f"[QUIBEY] {path} -> {response.status}, {len(content)} bytes")
                 return content, response.status
             return None, 404
