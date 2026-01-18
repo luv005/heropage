@@ -8,19 +8,36 @@ import socketserver
 import urllib.request
 import urllib.parse
 import ssl
-import re
 import os
 import hashlib
 import json
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import threading
+from content_utils import fix_content
+
+# Playwright for rendering JavaScript
+try:
+    from playwright.sync_api import sync_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+    print("[WARNING] Playwright not available - pages will not render JavaScript")
 
 PORT = int(os.environ.get("PORT", 8000))
 CACHE_DIR = Path("cache")
-WAYBACK_TIMESTAMP = "20250519"  # Use a specific timestamp for consistency
+WAYBACK_TIMESTAMP = "20240419175536"  # Full timestamp with rendered content
 ORIGINAL_DOMAIN = "hero.page"
 LOCAL_DOMAIN = os.environ.get("DOMAIN", "localhost:8000")  # Set DOMAIN env var in production
+STATIC_ONLY = os.environ.get("STATIC_ONLY", "0").lower() in ("1", "true", "yes")
+ALLOW_REMOTE_FETCH = not STATIC_ONLY and os.environ.get("ALLOW_REMOTE_FETCH", "1").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+QUIBEY_WAIT_UNTIL = os.environ.get("QUIBEY_WAIT_UNTIL", "domcontentloaded")
+QUIBEY_TIMEOUT_MS = int(os.environ.get("QUIBEY_TIMEOUT_MS", "60000"))
+QUIBEY_POST_WAIT_MS = int(os.environ.get("QUIBEY_POST_WAIT_MS", "1500"))
 
 # Create cache directory
 CACHE_DIR.mkdir(exist_ok=True)
@@ -37,23 +54,43 @@ def get_cache_path(path):
     return CACHE_DIR / f"{safe_name}.html"
 
 def fetch_from_quibey(path):
-    """Fetch a page from quibey.com (mirror site)"""
+    """Fetch a page from quibey.com using Playwright to render JavaScript"""
     quibey_url = f"https://quibey.com{path}"
-    ctx = get_ssl_context()
+
+    if not PLAYWRIGHT_AVAILABLE:
+        print(f"[QUIBEY] Playwright not available, skipping {path}")
+        return None, 500
 
     try:
-        req = urllib.request.Request(quibey_url, headers={
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-        })
-        with urllib.request.urlopen(req, context=ctx, timeout=30) as response:
-            content = response.read().decode('utf-8', errors='ignore')
-            if len(content) > 1000:  # Accept SPA shells with meta tags
-                print(f"[QUIBEY] {path} -> {response.status}, {len(content)} bytes")
-                return content, response.status
+        print(f"[QUIBEY] Rendering {path} with Playwright...")
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            response = page.goto(
+                quibey_url,
+                wait_until=QUIBEY_WAIT_UNTIL,
+                timeout=QUIBEY_TIMEOUT_MS,
+            )
+
+            # Check if response is HTML
+            content_type = response.headers.get("content-type", "") if response else ""
+            if "text/html" not in content_type:
+                print(f"[QUIBEY] {path} -> not HTML ({content_type}), skipping")
+                browser.close()
+                return None, 404
+
+            # Wait for content to render
+            page.wait_for_timeout(QUIBEY_POST_WAIT_MS)
+            content = page.content()
+            browser.close()
+
+            # Verify it's HTML content
+            if len(content) > 1000 and (content.strip().startswith("<!") or content.strip().startswith("<html")):
+                print(f"[QUIBEY] {path} -> 200, {len(content)} bytes (rendered)")
+                return content, 200
             return None, 404
-    except urllib.error.HTTPError as e:
-        return None, e.code
     except Exception as e:
+        print(f"[QUIBEY ERROR] {path}: {e}")
         return None, 500
 
 
@@ -79,119 +116,14 @@ def fetch_from_wayback(path):
 
 
 def fetch_content(path):
-    """Try quibey.com first, then fall back to Wayback Machine"""
-    # Try quibey.com first (faster, has rendered content)
+    """Try quibey.com first (with Playwright), then fall back to Wayback Machine"""
+    # Try quibey.com first (renders JavaScript for full content)
     content, status = fetch_from_quibey(path)
     if content and status == 200:
         return content, status
 
     # Fall back to Wayback Machine
     return fetch_from_wayback(path)
-
-def fix_content(content, path):
-    """Fix links and references to work locally"""
-    # Remove Wayback Machine wrapper
-    content = re.sub(
-        r'https://web\.archive\.org/web/\d+id_/https://hero\.page',
-        '',
-        content
-    )
-    content = re.sub(
-        r'https://web\.archive\.org/web/\d+/https://hero\.page',
-        '',
-        content
-    )
-    # Remove external links to quibey.com (keep the text, remove the link)
-    content = re.sub(
-        r'<a[^>]*href="https?://quibey\.com[^"]*"[^>]*>(.*?)</a>',
-        r'\1',
-        content,
-        flags=re.DOTALL
-    )
-    # Also remove any remaining quibey.com URLs in href/src attributes
-    content = re.sub(
-        r'https://quibey\.com/',
-        '/',
-        content
-    )
-    content = re.sub(
-        r'https://quibey\.com',
-        '',
-        content
-    )
-    # Fix direct hero.page links
-    content = re.sub(
-        r'https://hero\.page/',
-        '/',
-        content
-    )
-    content = re.sub(
-        r'https://hero\.page',
-        '',
-        content
-    )
-    # Fix protocol-relative URLs
-    content = re.sub(
-        r'//hero\.page/',
-        '/',
-        content
-    )
-    content = re.sub(
-        r'//quibey\.com/',
-        '/',
-        content
-    )
-
-    # Replace all Quibey references with Hero (case insensitive)
-    content = re.sub(r'[Qq]uibey', 'Hero', content)
-
-    # Remove existing canonical tags and add new one for hero.page
-    content = re.sub(r'<link[^>]*rel="canonical"[^>]*/>', '', content)
-    content = re.sub(r'<link[^>]*rel="canonical"[^>]*>', '', content)
-    if '<head>' in content:
-        canonical = f'<link rel="canonical" href="https://{LOCAL_DOMAIN}{path}" />'
-        content = content.replace('<head>', f'<head>\n{canonical}', 1)
-
-    # Remove React JavaScript to make links work as plain HTML
-    # Remove main.js script which handles client-side routing
-    content = re.sub(r'<script[^>]*src="[^"]*main\.[^"]*\.js"[^>]*></script>', '', content)
-    content = re.sub(r'<script[^>]*src="[^"]*chunk\.[^"]*\.js"[^>]*></script>', '', content)
-
-    # Also remove inline scripts that might interfere
-    content = re.sub(r'<script>window\.__REACT.*?</script>', '', content, flags=re.DOTALL)
-
-    # Fix pointer-events: none that blocks clicking
-    content = content.replace('pointer-events: none', 'pointer-events: auto')
-    content = content.replace('pointer-events:none', 'pointer-events:auto')
-
-    # Add CSS override to ensure all links are clickable
-    if '</head>' in content:
-        css_fix = '''<style>
-a, a *, [href] { pointer-events: auto !important; cursor: pointer !important; }
-</style>'''
-        content = content.replace('</head>', f'{css_fix}</head>')
-
-    # If page is an SPA shell (empty root div), add a fallback message with metadata
-    if '<div class="main-window" id="root"></div>' in content or '<div id="root"></div>' in content:
-        # Extract title and description from meta tags
-        title_match = re.search(r'<title>([^<]+)</title>', content)
-        desc_match = re.search(r'<meta name="description" content="([^"]+)"', content)
-
-        title = title_match.group(1) if title_match else 'Hero Page'
-        description = desc_match.group(1) if desc_match else ''
-
-        fallback_content = f'''
-<div style="max-width: 800px; margin: 50px auto; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
-    <h1 style="color: #333;">{title}</h1>
-    <p style="color: #666; font-size: 18px;">{description}</p>
-    <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;">
-    <p style="color: #999;">This page's full content was not archived. <a href="/" style="color: #e82f64;">Return to homepage</a></p>
-</div>
-'''
-        content = content.replace('<div class="main-window" id="root"></div>', f'<div class="main-window" id="root">{fallback_content}</div>')
-        content = content.replace('<div id="root"></div>', f'<div id="root">{fallback_content}</div>')
-
-    return content
 
 class WaybackProxyHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -211,16 +143,14 @@ class WaybackProxyHandler(http.server.BaseHTTPRequestHandler):
                 return
 
         # Serve static assets directly if they exist locally
-        local_file = Path("static_pages") / path.lstrip('/')
-        if local_file.exists() and local_file.is_file():
-            self.serve_local_file(local_file)
-            return
-
-        # Check for directory index
+        local_file = Path("static_pages") / path.lstrip("/")
         if local_file.is_dir():
             index_file = local_file / "index.html"
             if index_file.exists():
                 local_file = index_file
+        if local_file.exists() and local_file.is_file():
+            self.serve_local_file(local_file)
+            return
 
         # Check cache first
         cache_path = get_cache_path(path)
@@ -230,13 +160,26 @@ class WaybackProxyHandler(http.server.BaseHTTPRequestHandler):
             self.send_html_response(200, content)
             return
 
+        if not ALLOW_REMOTE_FETCH:
+            self.send_html_response(404, f"""
+<!DOCTYPE html>
+<html>
+<head><title>Content Unavailable</title></head>
+<body>
+<h1>Content Unavailable</h1>
+<p>The page {path} is not available in static-only mode.</p>
+<p><a href="/">Go to homepage</a></p>
+</body>
+</html>""")
+            return
+
         # Fetch from quibey.com first, then Wayback Machine
         print(f"[FETCH] {path}")
         content, status = fetch_content(path)
 
         if content and status == 200:
             # Fix content for local serving
-            content = fix_content(content, path)
+            content = fix_content(content, path, LOCAL_DOMAIN)
 
             # Cache all content (even small SPA shells have SEO value)
             cache_path.write_text(content, encoding='utf-8')
@@ -335,6 +278,7 @@ def run_server():
     print("=" * 60)
     print(f"Server running at http://localhost:{PORT}")
     print(f"Proxying content from Wayback Machine")
+    print(f"Remote fetch: {'enabled' if ALLOW_REMOTE_FETCH else 'disabled (static-only)'}")
     print(f"Cache directory: {CACHE_DIR.absolute()}")
     print()
     print("For production, change LOCAL_DOMAIN to your actual domain")
