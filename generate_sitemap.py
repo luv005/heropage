@@ -2,6 +2,7 @@
 """Generate sitemap.xml from CSV links and local static pages."""
 import csv
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -14,6 +15,10 @@ SITEMAP_HOSTS = [
     for host in os.environ.get("SITEMAP_HOSTS", "hero.page").split(",")
     if host.strip()
 ]
+INLINE_STYLE_RE = re.compile(
+    r'<style[^>]*id="inline-styles-from-cssom"[^>]*>(.*?)</style>',
+    re.DOTALL,
+)
 
 
 def normalize_path(raw_path):
@@ -59,28 +64,50 @@ def load_csv_paths(csv_path, allowed_hosts):
     return paths, skipped_hosts
 
 
+def path_from_html_file(static_dir, html_file):
+    try:
+        rel = html_file.relative_to(static_dir)
+    except ValueError:
+        return None
+    if rel.parts and rel.parts[0] == "static":
+        return None
+    if rel.name == "index.html":
+        if rel.parent == Path("."):
+            path = "/"
+        else:
+            path = "/" + "/".join(rel.parent.parts)
+    else:
+        path = "/" + "/".join(rel.parts)
+    return normalize_path(path)
+
+
+def has_inline_css(html_file):
+    try:
+        content = html_file.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return False
+    match = INLINE_STYLE_RE.search(content)
+    if not match:
+        return False
+    inline_css = match.group(1).strip()
+    return bool(inline_css and "{" in inline_css)
+
+
 def load_static_paths(static_dir):
     paths = set()
+    valid_paths = set()
     if not static_dir.exists():
-        return paths
+        return paths, valid_paths
 
     for html_file in static_dir.rglob("*.html"):
-        try:
-            rel = html_file.relative_to(static_dir)
-        except ValueError:
+        path = path_from_html_file(static_dir, html_file)
+        if not path:
             continue
-        if rel.parts and rel.parts[0] == "static":
-            continue
-        if rel.name == "index.html":
-            if rel.parent == Path("."):
-                path = "/"
-            else:
-                path = "/" + "/".join(rel.parent.parts)
-        else:
-            path = "/" + "/".join(rel.parts)
-        paths.add(normalize_path(path))
+        paths.add(path)
+        if has_inline_css(html_file):
+            valid_paths.add(path)
 
-    return paths
+    return paths, valid_paths
 
 
 def escape_xml(text):
@@ -116,9 +143,9 @@ def generate_sitemap(domain, paths):
 
 if __name__ == "__main__":
     csv_paths, skipped_hosts = load_csv_paths(CSV_PATH, SITEMAP_HOSTS)
-    static_paths = load_static_paths(STATIC_DIR)
-
-    all_paths = sorted(csv_paths.union(static_paths))
+    static_paths, valid_paths = load_static_paths(STATIC_DIR)
+    included_csv = csv_paths.intersection(valid_paths)
+    all_paths = sorted(valid_paths)
 
     if skipped_hosts:
         skipped_summary = ", ".join(
@@ -128,6 +155,8 @@ if __name__ == "__main__":
 
     print(f"CSV paths: {len(csv_paths)}")
     print(f"Static paths: {len(static_paths)}")
+    print(f"CSV paths with inline CSS: {len(included_csv)}")
+    print(f"Static paths with inline CSS: {len(valid_paths)}")
     print(f"Total unique paths: {len(all_paths)}")
 
     sitemap = generate_sitemap(DOMAIN, all_paths)
