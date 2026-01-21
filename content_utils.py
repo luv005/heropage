@@ -28,8 +28,31 @@ def fix_content(content, path, domain):
     content = re.sub(r"//quibey\.com/", "/", content)
     content = re.sub(r"//quibey\.com(?=[\"'])", "/", content)
 
-    # Replace all Quibey references with Hero (case insensitive)
-    content = re.sub(r"[Qq]uibey", "Hero", content)
+    # Fix CDN hosts for assets (avoid broken Hero/hero.page CDN references).
+    content = re.sub(
+        r"https?://cdn-2\.hero\.com",
+        "https://cdn-2.quibey.com",
+        content,
+        flags=re.IGNORECASE,
+    )
+    content = re.sub(
+        r"https?://cdn\.hero\.page",
+        "https://cdn-2.quibey.com",
+        content,
+        flags=re.IGNORECASE,
+    )
+    content = re.sub(
+        r"//cdn-2\.hero\.com",
+        "//cdn-2.quibey.com",
+        content,
+        flags=re.IGNORECASE,
+    )
+    content = re.sub(
+        r"//cdn\.hero\.page",
+        "//cdn-2.quibey.com",
+        content,
+        flags=re.IGNORECASE,
+    )
 
     # Remove existing canonical tags and add new one for hero.page.
     content = re.sub(

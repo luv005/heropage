@@ -101,6 +101,12 @@ def parse_args():
         help="Extra wait after navigation to allow rendering",
     )
     parser.add_argument(
+        "--style-wait-ms",
+        type=int,
+        default=int(os.environ.get("QUIBEY_STYLE_WAIT_MS", "5000")),
+        help="Wait for styled-components/emotion styles to appear (0 disables)",
+    )
+    parser.add_argument(
         "--sleep",
         type=float,
         default=0.2,
@@ -201,6 +207,90 @@ def chromium_launch_args():
     ]
 
 
+def wait_for_rendered_styles(page, timeout_ms):
+    if timeout_ms <= 0:
+        return
+    try:
+        page.wait_for_function(
+            """() => {
+                const hasStyled = Array.from(document.querySelectorAll('style[data-styled]'))
+                    .some(style => style.textContent && style.textContent.trim().length > 0);
+                const hasEmotion = Array.from(document.querySelectorAll('style[data-emotion]'))
+                    .some(style => style.textContent && style.textContent.trim().length > 0);
+                return hasStyled || hasEmotion;
+            }""",
+            timeout=timeout_ms,
+        )
+    except Exception:
+        pass
+
+
+def inline_cssom_styles(page):
+    try:
+        page.evaluate(
+            """() => {
+                const rules = [];
+                for (const sheet of Array.from(document.styleSheets || [])) {
+                    const owner = sheet.ownerNode;
+                    if (!owner) continue;
+                    const isStyled = owner.hasAttribute && (
+                        owner.hasAttribute('data-styled') || owner.hasAttribute('data-emotion')
+                    );
+                    if (!isStyled) continue;
+                    try {
+                        for (const rule of Array.from(sheet.cssRules || [])) {
+                            if (rule && rule.cssText) {
+                                rules.push(rule.cssText);
+                            }
+                        }
+                    } catch (err) {
+                        // Ignore cross-origin stylesheets.
+                    }
+                }
+                if (!rules.length) return;
+                let tag = document.getElementById('inline-styles-from-cssom');
+                if (!tag) {
+                    tag = document.createElement('style');
+                    tag.id = 'inline-styles-from-cssom';
+                    document.head.appendChild(tag);
+                }
+                tag.textContent = rules.join('\\n');
+            }"""
+        )
+    except Exception:
+        pass
+
+
+def has_inline_css(output_path):
+    try:
+        content = output_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return False
+
+    marker = 'id="inline-styles-from-cssom"'
+    if marker in content:
+        start = content.find(marker)
+        snippet = content[start : start + 5000]
+        return "</style>" in snippet and "{" in snippet
+    return False
+
+
+def create_browser_session(p):
+    chromium_exec = resolve_chromium_executable(p)
+    if chromium_exec is None:
+        raise SystemExit(
+            "Chromium executable not found. Run: python -m playwright install chromium"
+        )
+    browser = p.chromium.launch(
+        headless=True,
+        executable_path=str(chromium_exec),
+        args=chromium_launch_args(),
+    )
+    context = browser.new_context()
+    page = context.new_page()
+    return browser, context, page
+
+
 def load_paths(csv_path, host_prefixes):
     paths = []
     skipped_hosts = {}
@@ -242,6 +332,7 @@ def render_pages(
     wait_until,
     timeout_ms,
     render_wait_ms,
+    style_wait_ms,
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -251,36 +342,40 @@ def render_pages(
     failed = 0
 
     with sync_playwright() as p:
-        chromium_exec = resolve_chromium_executable(p)
-        if chromium_exec is None:
-            raise SystemExit(
-                "Chromium executable not found. Run: python -m playwright install chromium"
-            )
-        browser = p.chromium.launch(
-            headless=True,
-            executable_path=str(chromium_exec),
-            args=chromium_launch_args(),
-        )
-        context = browser.new_context()
-        page = context.new_page()
+        browser, context, page = create_browser_session(p)
 
         for idx, path in enumerate(paths, 1):
             target_url = f"https://quibey.com{path}"
             output_path = output_path_for(output_dir, path)
 
             if output_path.exists() and not force:
-                skipped += 1
-                continue
+                if has_inline_css(output_path):
+                    skipped += 1
+                    continue
 
-            try:
-                response = page.goto(
-                    target_url,
-                    wait_until=wait_until,
-                    timeout=timeout_ms,
-                )
-            except Exception as exc:
-                failed += 1
-                print(f"[{idx}/{total}] ERROR {path}: {exc}")
+            response = None
+            for attempt in range(2):
+                try:
+                    response = page.goto(
+                        target_url,
+                        wait_until=wait_until,
+                        timeout=timeout_ms,
+                    )
+                    break
+                except Exception as exc:
+                    if attempt == 0 and "TargetClosed" in str(exc):
+                        try:
+                            context.close()
+                            browser.close()
+                        except Exception:
+                            pass
+                        browser, context, page = create_browser_session(p)
+                        continue
+                    failed += 1
+                    print(f"[{idx}/{total}] ERROR {path}: {exc}")
+                    response = None
+                    break
+            if response is None:
                 continue
 
             status = response.status if response else None
@@ -292,7 +387,9 @@ def render_pages(
                 )
                 continue
 
+            wait_for_rendered_styles(page, style_wait_ms)
             page.wait_for_timeout(render_wait_ms)
+            inline_cssom_styles(page)
             content = page.content()
             if len(content) < min_bytes:
                 failed += 1
@@ -343,6 +440,7 @@ def main():
         args.wait_until,
         args.timeout_ms,
         args.render_wait_ms,
+        args.style_wait_ms,
     )
 
     print("-" * 60)

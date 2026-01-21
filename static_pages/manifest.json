@@ -1,0 +1,34 @@
+{
+  "name": "Hero",
+  "short_name": "Hero",
+  "description": "Hero lets you share your links with the world!",
+  "lang": "en-GB",
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#e82f64",
+  "background_color": "#ffffff",
+  "icons": [
+    {
+      "src": "/android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "related_applications": [
+    {
+      "platform": "play",
+      "id": "com.billbandits.hero",
+      "url": "https://play.google.com/store/apps/details?id=com.billbandits.hero"
+    },
+    {
+      "platform": "itunes",
+      "id": "com.billbandits.FocusHero",
+      "url": "https://apps.apple.com/us/app/hero/id1632645305"
+    }
+  ]
+}

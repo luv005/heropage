@@ -1,117 +1,138 @@
 #!/usr/bin/env python3
-"""Generate sitemap.xml with only pages that have actual content"""
-import urllib.request
-import ssl
+"""Generate sitemap.xml from CSV links and local static pages."""
+import csv
+import os
 from datetime import datetime
-import re
+from pathlib import Path
+from urllib.parse import urlparse
 
-# Pages known to have rendered content (from homepage links + verified working)
-VERIFIED_PAGES = [
-    "/",
-    "/discover",
-    "/blog",
-    "/templates",
-    "/ai-prompts",
-    "/sign-in",
-    "/create-account",
-    "/pfp/anime-pfp",
-    "/pfp/matching-pfp-for-couples",
-    "/pfp/matching-pfp",
-    "/podcasts/podcast-show-notes-how-to-write-and-share-with-listeners",
-    "/help/save-and-share-interesting-links",
-    "/share-a-list-of-links",
+STATIC_DIR = Path(os.environ.get("STATIC_DIR", "static_pages"))
+CSV_PATH = os.environ.get("CSV_PATH", "")
+DOMAIN = os.environ.get("DOMAIN", "hero.page")
+SITEMAP_HOSTS = [
+    host.strip()
+    for host in os.environ.get("SITEMAP_HOSTS", "hero.page").split(",")
+    if host.strip()
 ]
 
-def get_ssl_context():
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    return ctx
 
-def check_page_has_content(path):
-    """Check if a page has actual rendered content (not just SPA shell)"""
-    url = f"https://web.archive.org/web/20250519id_/https://hero.page{path}"
-    ctx = get_ssl_context()
-    
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, context=ctx, timeout=15) as response:
-            content = response.read()
-            # Pages with rendered content are usually > 10KB
-            # SPA shells are typically 1-5KB
-            return len(content) > 10000
-    except:
-        return False
+def normalize_path(raw_path):
+    if not raw_path or raw_path == "/":
+        return "/"
+    parts = []
+    for part in raw_path.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(part)
+    return "/" + "/".join(parts)
 
-def get_homepage_links():
-    """Extract links from the homepage"""
-    url = "https://web.archive.org/web/20250519id_/https://hero.page/"
-    ctx = get_ssl_context()
-    
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, context=ctx, timeout=30) as response:
-            content = response.read().decode('utf-8', errors='ignore')
-            
-            # Extract internal links
-            links = set()
-            for match in re.findall(r'href="(/[^"]*)"', content):
-                path = match.split('?')[0].split('#')[0]
-                if path and len(path) > 1 and not any(x in path for x in ['.js', '.css', '.png', '.jpg', '.ico', '.json']):
-                    links.add(path)
-            return list(links)
-    except Exception as e:
-        print(f"Error: {e}")
-        return []
+
+def load_csv_paths(csv_path, allowed_hosts):
+    paths = set()
+    skipped_hosts = {}
+
+    if not csv_path:
+        return paths, skipped_hosts
+
+    csv_file = Path(csv_path)
+    if not csv_file.exists():
+        return paths, skipped_hosts
+
+    with open(csv_file, newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            url = row.get("URL") or row.get("Url") or row.get("url")
+            if not url:
+                continue
+            parsed = urlparse(url.strip())
+            host = parsed.hostname or ""
+            if allowed_hosts and host not in allowed_hosts:
+                skipped_hosts[host] = skipped_hosts.get(host, 0) + 1
+                continue
+            path = normalize_path(parsed.path or "/")
+            paths.add(path)
+
+    return paths, skipped_hosts
+
+
+def load_static_paths(static_dir):
+    paths = set()
+    if not static_dir.exists():
+        return paths
+
+    for html_file in static_dir.rglob("*.html"):
+        try:
+            rel = html_file.relative_to(static_dir)
+        except ValueError:
+            continue
+        if rel.parts and rel.parts[0] == "static":
+            continue
+        if rel.name == "index.html":
+            if rel.parent == Path("."):
+                path = "/"
+            else:
+                path = "/" + "/".join(rel.parent.parts)
+        else:
+            path = "/" + "/".join(rel.parts)
+        paths.add(normalize_path(path))
+
+    return paths
+
 
 def escape_xml(text):
-    """Escape special XML characters"""
-    return (text
-        .replace('&', '&amp;')
-        .replace('<', '&lt;')
-        .replace('>', '&gt;')
-        .replace('"', '&quot;')
-        .replace("'", '&apos;'))
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
+
 
 def generate_sitemap(domain, paths):
-    """Generate sitemap XML"""
-    today = datetime.now().strftime('%Y-%m-%d')
-    
+    today = datetime.now().strftime("%Y-%m-%d")
+
     xml = '<?xml version="1.0" encoding="UTF-8"?>\n'
     xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
-    
+
     for path in paths:
         path = escape_xml(path)
-        xml += f'''  <url>
-    <loc>https://{domain}{path}</loc>
-    <lastmod>{today}</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
-  </url>
-'''
-    
-    xml += '</urlset>'
+        xml += (
+            "  <url>\n"
+            f"    <loc>https://{domain}{path}</loc>\n"
+            f"    <lastmod>{today}</lastmod>\n"
+            "    <changefreq>monthly</changefreq>\n"
+            "    <priority>0.8</priority>\n"
+            "  </url>\n"
+        )
+
+    xml += "</urlset>"
     return xml
 
+
 if __name__ == "__main__":
-    import os
-    domain = os.environ.get("DOMAIN", "hero.page")
-    
-    print("Getting links from homepage...")
-    homepage_links = get_homepage_links()
-    print(f"Found {len(homepage_links)} links on homepage")
-    
-    # Combine verified pages with homepage links
-    all_paths = list(set(VERIFIED_PAGES + homepage_links))
-    all_paths.sort()
-    
+    csv_paths, skipped_hosts = load_csv_paths(CSV_PATH, SITEMAP_HOSTS)
+    static_paths = load_static_paths(STATIC_DIR)
+
+    all_paths = sorted(csv_paths.union(static_paths))
+
+    if skipped_hosts:
+        skipped_summary = ", ".join(
+            f"{host}:{count}" for host, count in sorted(skipped_hosts.items())
+        )
+        print(f"Skipped hosts from CSV: {skipped_summary}")
+
+    print(f"CSV paths: {len(csv_paths)}")
+    print(f"Static paths: {len(static_paths)}")
     print(f"Total unique paths: {len(all_paths)}")
-    
-    # Generate sitemap
-    sitemap = generate_sitemap(domain, all_paths)
-    
-    with open("sitemap.xml", "w") as f:
-        f.write(sitemap)
-    
-    url_count = sitemap.count('<url>')
+
+    sitemap = generate_sitemap(DOMAIN, all_paths)
+    with open("sitemap.xml", "w", encoding="utf-8") as handle:
+        handle.write(sitemap)
+
+    url_count = sitemap.count("<url>")
     print(f"Generated sitemap.xml with {url_count} URLs")

@@ -38,6 +38,7 @@ ALLOW_REMOTE_FETCH = not STATIC_ONLY and os.environ.get("ALLOW_REMOTE_FETCH", "1
 QUIBEY_WAIT_UNTIL = os.environ.get("QUIBEY_WAIT_UNTIL", "domcontentloaded")
 QUIBEY_TIMEOUT_MS = int(os.environ.get("QUIBEY_TIMEOUT_MS", "60000"))
 QUIBEY_POST_WAIT_MS = int(os.environ.get("QUIBEY_POST_WAIT_MS", "1500"))
+QUIBEY_STYLE_WAIT_MS = int(os.environ.get("QUIBEY_STYLE_WAIT_MS", "5000"))
 
 # Create cache directory
 CACHE_DIR.mkdir(exist_ok=True)
@@ -79,8 +80,55 @@ def fetch_from_quibey(path):
                 browser.close()
                 return None, 404
 
-            # Wait for content to render
+            # Wait for styled-components/emotion styles to render (best effort)
+            if QUIBEY_STYLE_WAIT_MS > 0:
+                try:
+                    page.wait_for_function(
+                        """() => {
+                            const hasStyled = Array.from(document.querySelectorAll('style[data-styled]'))
+                                .some(style => style.textContent && style.textContent.trim().length > 0);
+                            const hasEmotion = Array.from(document.querySelectorAll('style[data-emotion]'))
+                                .some(style => style.textContent && style.textContent.trim().length > 0);
+                            return hasStyled || hasEmotion;
+                        }""",
+                        timeout=QUIBEY_STYLE_WAIT_MS,
+                    )
+                except Exception:
+                    pass
             page.wait_for_timeout(QUIBEY_POST_WAIT_MS)
+            try:
+                page.evaluate(
+                    """() => {
+                        const rules = [];
+                        for (const sheet of Array.from(document.styleSheets || [])) {
+                            const owner = sheet.ownerNode;
+                            if (!owner) continue;
+                            const isStyled = owner.hasAttribute && (
+                                owner.hasAttribute('data-styled') || owner.hasAttribute('data-emotion')
+                            );
+                            if (!isStyled) continue;
+                            try {
+                                for (const rule of Array.from(sheet.cssRules || [])) {
+                                    if (rule && rule.cssText) {
+                                        rules.push(rule.cssText);
+                                    }
+                                }
+                            } catch (err) {
+                                // Ignore cross-origin stylesheets.
+                            }
+                        }
+                        if (!rules.length) return;
+                        let tag = document.getElementById('inline-styles-from-cssom');
+                        if (!tag) {
+                            tag = document.createElement('style');
+                            tag.id = 'inline-styles-from-cssom';
+                            document.head.appendChild(tag);
+                        }
+                        tag.textContent = rules.join('\\n');
+                    }"""
+                )
+            except Exception:
+                pass
             content = page.content()
             browser.close()
 
