@@ -62,10 +62,22 @@ def fix_content(content, path, domain):
         flags=re.IGNORECASE,
     )
     canonical = f'<link rel="canonical" href="https://{domain}{path}" />'
+
+    # Google Analytics (gtag.js)
+    ga_script = """<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-60QCN7FNK5"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-60QCN7FNK5');
+</script>"""
+
     if re.search(r"<head[^>]*>", content):
         content = re.sub(
             r"<head[^>]*>",
-            lambda match: f"{match.group(0)}\n{canonical}",
+            lambda match: f"{match.group(0)}\n{ga_script}\n{canonical}",
             content,
             count=1,
         )
